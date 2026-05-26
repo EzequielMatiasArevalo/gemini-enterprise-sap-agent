@@ -1,0 +1,33 @@
+# Example: new VPC + Private Service Connect consumer infrastructure
+project_id  = "eleven-analytics-agents"
+region      = "us-central1"
+environment = "dev"
+
+vpc_mode = "existing"
+vpc_name = "sap-agent-vpc"
+network_attachment_name = "agent-engine-attachment"
+agent_service_account = "sap-agent-abap"
+sap_credentials_secrets = "sap-agent-abap"
+agent_module = "sap_abap_agent_v2"
+staging_bucket_name = "staging-sap-agent-abap-develop"
+
+enable_psc     = false
+enable_psc_nat = false
+
+sap_ip = "http://ecc-xe1.camanchaca.cl/sap/bc/adt?saml2=disabled"
+
+# Per-agent deploy settings (display_name, resource_limits, requirements,
+# extra_packages, env_vars) live in <agent_module>/config.yaml.
+#
+# Extra runtime env vars (merged on top of the auto-derived
+# GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION / GOOGLE_CLOUD_BUCKET
+# defaults and the agent's config.yaml deploy.env_vars).
+# agent_engine_env_vars = {
+#}
+
+aiplatform_iam_wait_seconds = 45
+
+deploy_agent_engine   = true
+agent_deploy_revision = "4"
+
+

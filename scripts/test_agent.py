@@ -11,11 +11,18 @@ from vertexai.preview import reasoning_engines
 # Just to view JSON response formatted
 import json
 import os
-# To load envvars dict from .env file
-try:
-    AGENT_ENGINE_RESOURCE=os.environ["AGENT_ENGINE_RESOURCE"]
-except KeyError:
+import argparse
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Test an Agent Engine")
+    parser.add_argument("--ae-resource", type=str, required=True, help="The resource name of the Agent Engine")
+    return parser.parse_args()
+
+# To load envvars dict from .env file
+args = parse_args()
+AGENT_ENGINE_RESOURCE=args.ae_resource or os.environ.get("AGENT_ENGINE_RESOURCE")
+
+if not AGENT_ENGINE_RESOURCE:
     print("="*20, " ERROR ", "="*20)
 
     print("AGENT_ENGINE_RESOURCE is not set. Please set it in the environment variables.")

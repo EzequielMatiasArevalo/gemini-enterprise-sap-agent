@@ -49,7 +49,7 @@ variable "staging_bucket_name" {
 }
 
 # --- Secret ---
-variable "sap_secret_id" {
+variable "secret_id" {
   description = "Secret Manager secret ID for SAP credentials."
   type        = string
   default     = "sap-credentials"
@@ -111,7 +111,7 @@ variable "network_attachment_name" {
   default = "agent-engine-attachment"
 }
 
-variable "sap_ip" {
+variable "psc_ip" {
   type    = string
   default = "10.142.0.5"
 }
@@ -192,7 +192,7 @@ variable "python_interpreter" {
 }
 
 variable "agent_module" {
-  description = "Python module path of the agent package to deploy (passed to deploy script as --agent-module). Example: 'sap_abap_agent_v2' or 'my_other_agent'."
+  description = "Python module path of the agent package to deploy (passed to deploy script as --agent-module). Example: 'abap_agent_v2' or 'my_other_agent'."
   type        = string
 }
 

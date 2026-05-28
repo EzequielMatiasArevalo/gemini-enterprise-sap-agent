@@ -20,12 +20,20 @@ agent_description: 'SAP ABAP Code Agent in Google Cloud'
 # ---------------------------------------------------------------------------
 # Deployment settings consumed by scripts/deploy_agent_engine.py.
 # CLI arguments to that script override anything defined here.
-# Infrastructure-specific values (project, region, service account,
-# network attachment, secret name, etc.) still come from Terraform / CLI.
+# Infrastructure-specific values (project, region, network attachment,
+# secret name, etc.) still come from Terraform / CLI.
 # ---------------------------------------------------------------------------
 deploy:
   # Display name shown in the Vertex AI Agent Engine console.
   display_name: 'SAP Agent'
+
+  # Runtime service account (email or short ID). When omitted, the deploy
+  # script uses agent-engine-sa@<project>.iam.gserviceaccount.com.
+  # service_account: 'agent-engine-sa'
+
+  # Autoscaling bounds (optional; Agent Engine defaults apply when omitted).
+  min_instances: 1
+  max_instances: 10
 
   # Attribute name of the root agent inside <agent_name>/agent.py.
   agent_attr: 'root_agent'

@@ -26,7 +26,7 @@ output "network_attachment_self_link" {
   value = google_compute_network_attachment.agent_engine.self_link
 }
 
-output "sap_firewall_name" {
+output "firewall_name" {
   value = try(google_compute_firewall.agent_engine_to_sap[0].name, null)
 }
 

@@ -37,8 +37,8 @@ output "staging_bucket_url" {
   value = module.staging_bucket.url
 }
 
-output "sap_secret_id" {
-  value = module.sap_secret.secret_id
+output "secret_id" {
+  value = module.secret.secret_id
 }
 
 output "network_attachment_id" {

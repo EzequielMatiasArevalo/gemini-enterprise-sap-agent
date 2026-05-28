@@ -27,7 +27,7 @@ resource "google_compute_network_attachment" "agent_engine" {
 
 # Agent Engine (PSC subnet) → SAP on-prem / RFC1918 host
 resource "google_compute_firewall" "agent_engine_to_sap" {
-  count = var.create_sap_firewall ? 1 : 0
+  count = var.create_firewall ? 1 : 0
 
   name    = var.firewall_rule_name
   project = var.project_id
@@ -44,7 +44,7 @@ resource "google_compute_firewall" "agent_engine_to_sap" {
   }
 
   source_ranges      = [var.psc_subnet_range]
-  destination_ranges = ["${var.sap_ip}/32"]
+  destination_ranges = ["${var.psc_ip}/32"]
 
   log_config {
     metadata = "INCLUDE_ALL_METADATA"

@@ -1,5 +1,5 @@
-module "sap_agent" {
-  source = "../../modules/sap_agent"
+module "agent" {
+  source = "../../modules/agent"
 
   providers = {
     google-beta = google-beta
@@ -16,7 +16,7 @@ module "sap_agent" {
   consumer_subnet_range  = var.consumer_subnet_range
 
   enable_psc                      = var.enable_psc
-  sap_ip                          = var.sap_ip
+  psc_ip                          = var.psc_ip
   enable_psc_nat                  = var.enable_psc_nat
   enable_psc_private_dns          = var.enable_psc_private_dns
   psc_dns_record_sets             = var.psc_dns_record_sets
@@ -31,7 +31,7 @@ module "sap_agent" {
 
   aiplatform_iam_wait_seconds = var.aiplatform_iam_wait_seconds
   service_account_id          = var.agent_service_account
-  sap_secret_id               = var.sap_credentials_secrets
+  secret_id               = var.credentials_secrets
   staging_bucket_name         = var.staging_bucket_name
   network_attachment_name     = var.network_attachment_name
 }

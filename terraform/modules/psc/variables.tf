@@ -43,13 +43,13 @@ variable "connection_preference" {
 }
 
 # --- SAP on-prem / RFC1918 target ---
-variable "sap_ip" {
+variable "psc_ip" {
   description = "SAP target IP for direct PSC firewall destination."
   type        = string
   default     = "10.142.0.5"
 }
 
-variable "create_sap_firewall" {
+variable "create_firewall" {
   description = "Allow PSC subnet ingress to SAP IP (on-prem RFC1918)."
   type        = bool
   default     = true

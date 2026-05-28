@@ -52,7 +52,7 @@ variable "enable_psc" {
   default     = true
 }
 
-variable "sap_ip" {
+variable "psc_ip" {
   description = "SAP host IP for PSC firewall (RFC1918 on-prem)."
   type        = string
   default     = "10.142.0.5"
@@ -97,7 +97,7 @@ variable "deploy_agent_engine" {
   default     = false
 }
 
-variable "sap_credentials_secrets" {
+variable "credentials_secrets" {
   description = ""
   default = "sap-credentials-example"
 }
@@ -139,7 +139,7 @@ variable "network_attachment_name" {
 variable "agent_module" {
   description = "Python module path of the agent package to deploy (passed to deploy script as --agent-module)."
   type        = string
-  default     = "sap_abap_agent_v2"
+  default     = "abap_agent_v2"
 }
 
 variable "agent_engine_env_vars" {

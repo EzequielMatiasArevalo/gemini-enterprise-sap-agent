@@ -117,11 +117,11 @@ module "staging_bucket" {
   depends_on = [module.apis]
 }
 
-module "sap_secret" {
-  source = "../sap_secret"
+module "secret" {
+  source = "../secret"
 
   project_id = var.project_id
-  secret_id  = var.sap_secret_id
+  secret_id  = var.secret_id
 
   depends_on = [module.apis]
 }
@@ -138,7 +138,7 @@ module "psc" {
   psc_subnet_name   = var.psc_subnet_name
   psc_subnet_range  = var.psc_subnet_range
   attachment_name   = var.network_attachment_name
-  sap_ip            = var.sap_ip
+  psc_ip            = var.psc_ip
 
   consumer_subnet_range           = local.psc_consumer_subnet_range
   create_psc_to_consumer_firewall = local.enable_psc_to_consumer_firewall
@@ -169,14 +169,14 @@ module "agent_engine_deploy" {
   service_account          = module.service_account.email
   network_attachment       = var.enable_psc ? module.psc[0].network_attachment_id : "projects/${var.project_id}/regions/${var.region}/networkAttachments/${var.network_attachment_name}"
 
-  sap_credentials_secret   = "projects/${var.project_id}/secrets/${var.sap_secret_id}/versions/latest"
+  credentials_secret   = "projects/${var.project_id}/secrets/${var.secret_id}/versions/latest"
   agent_module             = var.agent_module
   extra_env_vars           = local.agent_engine_env_vars
 
   depends_on = [
     module.service_account,
     module.staging_bucket,
-    module.sap_secret,
+    module.secret,
     module.ai_platform_agents,
     module.vpc,
     module.psc,

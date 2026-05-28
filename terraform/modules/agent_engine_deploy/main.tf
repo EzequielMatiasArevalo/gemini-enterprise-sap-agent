@@ -7,7 +7,7 @@ locals {
     var.agent_module != null ? "--agent-module \"${var.agent_module}\"" : null,
     var.service_account != null ? "--service-account \"${var.service_account}\"" : null,
     var.network_attachment != null ? "--network-attachment \"${var.network_attachment}\"" : null,
-    var.sap_credentials_secret != null ? "--sap-credentials \"${var.sap_credentials_secret}\"" : null,
+    var.credentials_secret != null ? "--credentials \"${var.credentials_secret}\"" : null,
     length(var.extra_env_vars) > 0 ? "--env-vars \"${local.extra_env_vars_cli}\"" : null,
   ])
 
@@ -30,7 +30,7 @@ resource "null_resource" "deploy_agent_engine" {
     deploy_revision            = var.deploy_revision
     service_account            = var.service_account != null ? var.service_account : ""
     network_attachment         = var.network_attachment != null ? var.network_attachment : ""
-    sap_credentials_secret     = var.sap_credentials_secret != null ? var.sap_credentials_secret : ""
+    credentials_secret         = var.credentials_secret != null ? var.credentials_secret : ""
     extra_env_vars             = jsonencode(var.extra_env_vars)
   }
 

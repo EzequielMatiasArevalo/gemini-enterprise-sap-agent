@@ -22,6 +22,6 @@ psc_dns_record_sets = {
   }
 }
 
-sap_ip = "10.142.0.5"
+psc_ip = "10.142.0.5"
 
 deploy_agent_engine = false

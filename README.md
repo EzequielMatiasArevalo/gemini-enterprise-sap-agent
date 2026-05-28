@@ -13,7 +13,7 @@ The Terraform layout mirrors the legacy `scripts/setup_gcp_prerequisites.sh` and
 ├── sap_abap_agent_v2/                 # Agent package (ADK Agent + tools + config)
 │   ├── agent.py                       # root_agent definition
 │   ├── tools.py                       # SAP ADT API tools
-│   └── config.yaml                    # Deploy-time settings (requirements, env vars, …)
+│   └── config.yaml                    # Deploy-time settings (requirements, scaling, env vars, …)
 ├── scripts/
 │   ├── deploy_agent_engine.py         # Generic deploy script (driven by config.yaml)
 │   └── test_agent.py                  # Smoke-test a deployed Agent Engine
@@ -133,7 +133,7 @@ Terraform invokes `scripts/deploy_agent_engine.py` with:
 --project            <project_id>
 --region             <region>
 --staging-bucket     gs://<staging_bucket_name>
---service-account    agent-engine-sa@<project_id>.iam.gserviceaccount.com
+--service-account    <email>                  # optional; from agent_service_account when set
 --network-attachment projects/<project_id>/regions/<region>/networkAttachments/<network_attachment_name>
 --sap-credentials    projects/<project_id>/secrets/<sap_credentials_secrets>/versions/latest
 --agent-module       <agent_module>
@@ -141,7 +141,7 @@ Terraform invokes `scripts/deploy_agent_engine.py` with:
 --update             <resource_name>          # only when agent_engine_resource_name is set
 ```
 
-All deploy-time **agent** settings (display name, resource limits, Python requirements, extra packages, env vars) are loaded from `<agent_module>/config.yaml`. Terraform does not duplicate those values — see the next section.
+Infrastructure flags (`project`, `region`, staging bucket, network attachment, SAP secret, optional `--service-account` from Terraform) are always passed by Terraform. Deploy-time **agent** settings (display name, resource limits, service account, min/max instances, Python requirements, extra packages, env vars) are loaded from `<agent_module>/config.yaml` unless overridden on the CLI — see the next section.
 
 Requirements on the machine running `terraform apply`:
 
@@ -190,6 +190,14 @@ deploy:
   # Display name shown in the Vertex AI Agent Engine console.
   display_name: 'SAP Agent'
 
+  # Runtime service account (email or short ID). When omitted, the deploy
+  # script uses agent-engine-sa@<project>.iam.gserviceaccount.com.
+  # service_account: 'agent-engine-sa'
+
+  # Autoscaling bounds (optional; Agent Engine defaults apply when omitted).
+  min_instances: 1
+  max_instances: 10
+
   # Attribute name of the root agent inside <agent_module>/agent.py.
   agent_attr: 'root_agent'
 
@@ -222,14 +230,19 @@ deploy:
 
 ### Supported `deploy.*` keys
 
-| Key              | Type             | Purpose                                                                                       |
-|------------------|------------------|-----------------------------------------------------------------------------------------------|
-| `display_name`   | string           | Display name shown in the Agent Engine console.                                               |
-| `agent_attr`     | string           | Attribute name of the root agent inside `<agent_module>/agent.py` (default: `root_agent`).    |
-| `resource_limits`| map (cpu/memory) | Container CPU and memory.                                                                     |
-| `extra_packages` | list[string]     | Local paths bundled into the container. Defaults to `["./<agent_module>"]`.                   |
-| `env_vars`       | map[str, str]    | Non-secret env vars merged into the deployment.                                               |
-| `requirements`   | list[string]     | Pip requirements installed inside the container. **Required** (no built-in default).          |
+| Key               | Type             | Purpose                                                                                       |
+|-------------------|------------------|-----------------------------------------------------------------------------------------------|
+| `display_name`    | string           | Display name shown in the Agent Engine console.                                               |
+| `service_account` | string           | Runtime service account (email or short ID). Default: `agent-engine-sa@<project>.iam.gserviceaccount.com`. |
+| `min_instances`   | int              | Minimum number of Agent Engine instances (autoscaling). Optional.                             |
+| `max_instances`   | int              | Maximum number of Agent Engine instances (autoscaling). Optional.                             |
+| `agent_attr`      | string           | Attribute name of the root agent inside `<agent_module>/agent.py` (default: `root_agent`).    |
+| `resource_limits` | map (cpu/memory) | Container CPU and memory.                                                                     |
+| `extra_packages`  | list[string]     | Local paths bundled into the container. Defaults to `["./<agent_module>"]`.                   |
+| `env_vars`        | map[str, str]    | Non-secret env vars merged into the deployment.                                               |
+| `requirements`    | list[string]     | Pip requirements installed inside the container. **Required** (no built-in default).          |
+
+CLI overrides for the same settings: `--display-name`, `--service-account`, `--min-instances`, `--max-instances`, `--agent-attr`, `--resource-limits`, `--requirements`, `--extra-packages`, `--env-vars`.
 
 ### Deploying a different agent
 
@@ -247,6 +260,26 @@ You can also invoke the script directly:
 python scripts/deploy_agent_engine.py \
   --project <PROJECT_ID> \
   --agent-module my_other_agent
+
+# Override scaling or service account from config.yaml
+python scripts/deploy_agent_engine.py \
+  --project <PROJECT_ID> \
+  --min-instances 1 \
+  --max-instances 5 \
+  --service-account sap-agent-abap@<PROJECT_ID>.iam.gserviceaccount.com
+
+# Another example
+
+ python3 scripts/deploy_agent_engine.py \
+  --project "eleven-analytics-agents" \
+  --region "us-central1" \
+  --min-instances "1" \
+  --max-instances "5" \
+  --staging-bucket "gs://staging-sap-agent-abap-develop" \
+  --agent-module "sap_abap_agent_v2" \
+  --service-account "sap-agent-abap@eleven-analytics-agents.iam.gserviceaccount.com" \
+  --network-attachment "projects/eleven-analytics-agents/regions/us-central1/networkAttachments/agent-engine-attachment" \
+  --credentials "projects/eleven-analytics-agents/secrets/sap-agent-abap/versions/latest" 
 ```
 
 ---
@@ -308,7 +341,7 @@ The composite module lives at `terraform/modules/sap_agent`. The most relevant v
 | `agent_engine_env_vars`      | `{}`                  | Extra non-secret env vars merged on top of `deploy.env_vars` from `config.yaml`. User-supplied keys win. |
 | `python_interpreter`         | `python3`             | Python binary used to run the deploy script.                                            |
 
-> All Agent Engine **content** settings (`display_name`, `resource_limits`, `requirements`, `extra_packages`, base `env_vars`) live in `<agent_module>/config.yaml`, not in `terraform.tfvars`.
+> Agent Engine **content** settings (`display_name`, `resource_limits`, `requirements`, `extra_packages`, base `env_vars`, `service_account`, `min_instances`, `max_instances`) live in `<agent_module>/config.yaml`, not in `terraform.tfvars`. Terraform may still pass `--service-account` when `agent_service_account` is set (CLI wins over config).
 
 ### Example `terraform.tfvars` (existing VPC, no PSC)
 

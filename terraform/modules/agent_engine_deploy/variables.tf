@@ -54,7 +54,7 @@ variable "network_attachment" {
   default     = null
 }
 
-variable "sap_credentials_secret" {
+variable "credentials_secret" {
   description = "Secret Manager version resource name for SAP credentials."
   type        = string
   default     = null
@@ -69,7 +69,7 @@ variable "agent_module" {
         (display_name, resource_limits, requirements, extra_packages, env_vars).
   EOT
   type        = string
-  default     = "sap_abap_agent_v2"
+  default     = "abap_agent_v2"
 }
 
 variable "extra_env_vars" {

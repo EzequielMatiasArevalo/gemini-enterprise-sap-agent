@@ -5,16 +5,18 @@ This script deploys an ADK agent with direct Python function tools
 
 The agent module is configurable via ``--agent-module``. The script
 reads per-agent deployment settings (requirements, resource limits,
-display name, extra packages, env vars, root agent attribute name)
-from ``<agent_module>/config.yaml`` under the ``deploy:`` key.
+display name, extra packages, env vars, service account, min/max
+instances, root agent attribute name) from ``<agent_module>/config.yaml``
+under the ``deploy:`` key.
 
 Resolution order for every deploy setting:
     1. Explicit CLI argument (highest priority)
     2. ``deploy.<setting>`` in ``<agent_module>/config.yaml``
     3. Built-in fallback
 
-Infrastructure values (project, region, service account, network
-attachment, secret name) still come from CLI args / env vars.
+Infrastructure values (project, region, network attachment, secret name)
+still come from CLI args / env vars. ``service_account``, ``min_instances``,
+and ``max_instances`` can be set in ``deploy:`` in config.yaml or via CLI.
 
 Usage:
     # Create new Agent Engine (default agent: sap_abap_agent_v2)
@@ -69,9 +71,22 @@ def parse_args() -> argparse.Namespace:
         "--service-account",
         default=None,
         help=(
-            "Service account for the Agent Engine "
+            "Override deploy.service_account from config.yaml. "
+            "Service account email or short ID for the Agent Engine "
             "(default: agent-engine-sa@{PROJECT_ID}.iam.gserviceaccount.com)"
         ),
+    )
+    parser.add_argument(
+        "--min-instances",
+        type=int,
+        default=None,
+        help="Override deploy.min_instances from config.yaml.",
+    )
+    parser.add_argument(
+        "--max-instances",
+        type=int,
+        default=None,
+        help="Override deploy.max_instances from config.yaml.",
     )
     parser.add_argument(
         "--network-attachment",
@@ -82,9 +97,9 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--sap-credentials",
+        "--credentials",
         default=None,
-        help="SAP credentials Secret Manager name or full version path (default: sap-credentials)",
+        help="Secret Manager name or full version path (default: credentials)",
     )
     parser.add_argument(
         "--update",
@@ -280,6 +295,38 @@ def resolve_deploy_settings(
     if args.env_vars:
         env_vars.update(_parse_env_vars(args.env_vars))
 
+    # Service account (None → default applied in main with PROJECT_ID)
+    service_account = args.service_account or deploy_cfg.get("service_account")
+    if service_account is not None:
+        service_account = str(service_account).strip() or None
+
+    # Autoscaling bounds
+    min_instances = (
+        args.min_instances
+        if args.min_instances is not None
+        else deploy_cfg.get("min_instances")
+    )
+    if min_instances is not None:
+        min_instances = int(min_instances)
+
+    max_instances = (
+        args.max_instances
+        if args.max_instances is not None
+        else deploy_cfg.get("max_instances")
+    )
+    if max_instances is not None:
+        max_instances = int(max_instances)
+
+    if (
+        min_instances is not None
+        and max_instances is not None
+        and min_instances > max_instances
+    ):
+        raise SystemExit(
+            f"min_instances ({min_instances}) cannot exceed "
+            f"max_instances ({max_instances})."
+        )
+
     return {
         "agent_attr": agent_attr,
         "display_name": display_name,
@@ -287,6 +334,9 @@ def resolve_deploy_settings(
         "requirements": requirements,
         "extra_packages": extra_packages,
         "env_vars": env_vars,
+        "service_account": service_account,
+        "min_instances": min_instances,
+        "max_instances": max_instances,
     }
 
 
@@ -301,19 +351,12 @@ def main() -> None:
         or f"gs://{PROJECT_ID}_cloudbuild"
     )
 
+    RUNTIME_ONLY_KEYS = [
+        "oauth_redirect_uri"
+    ]
+
     os.environ["PROJECT_ID"] = PROJECT_ID
-    #os.environ["GOOGLE_CLOUD_PROJECT"] = PROJECT_ID
 
-    # env_path = Path("sap_agent/.env")
-    # if env_path.exists():
-    #     print(f"Loading environment variables from {env_path}")
-    #     load_dotenv(dotenv_path=env_path)
-    # else:
-    #     print(f"Note: {env_path} not found. Using Secret Manager for credentials.")
-
-    SERVICE_ACCOUNT = (
-        args.service_account or f"agent-engine-sa@{PROJECT_ID}.iam.gserviceaccount.com"
-    )
     NETWORK_ATTACHMENT = args.network_attachment or (
         f"projects/{PROJECT_ID}/regions/{LOCATION}"
         f"/networkAttachments/agent-engine-attachment"
@@ -321,6 +364,12 @@ def main() -> None:
 
     cfg = load_config(args.agent_module, args.config)
     settings = resolve_deploy_settings(args, cfg)
+
+    SERVICE_ACCOUNT = settings["service_account"] or (
+        f"agent-engine-sa@{PROJECT_ID}.iam.gserviceaccount.com"
+    )
+    MIN_INSTANCES = settings["min_instances"]
+    MAX_INSTANCES = settings["max_instances"]
 
     root_agent = load_agent(args.agent_module, settings["agent_attr"])
 
@@ -330,6 +379,8 @@ def main() -> None:
     print(f"  Staging Bucket:     {STAGING_BUCKET}")
     print(f"  Network Attachment: {NETWORK_ATTACHMENT}")
     print(f"  Service Account:    {SERVICE_ACCOUNT}")
+    print(f"  Min Instances:      {MIN_INSTANCES}")
+    print(f"  Max Instances:      {MAX_INSTANCES}")
     print(f"  Agent Module:       {args.agent_module}.{settings['agent_attr']}")
     print(f"  Display Name:       {settings['display_name']}")
     print(f"  Resource Limits:    {settings['resource_limits']}")
@@ -356,69 +407,83 @@ def main() -> None:
     )
 
     # ---------------------------------------------------------------
-    # Load SAP credentials from Secret Manager and build env_vars.
+    # Load secrets from Secret Manager and build env_vars.
     # ---------------------------------------------------------------
-    print("Loading SAP credentials from Secret Manager...")
-    sm_client = secretmanager.SecretManagerServiceClient()
-    secret_name = (
-        args.sap_credentials
-        if args.sap_credentials and args.sap_credentials.startswith("projects/")
-        else f"projects/{PROJECT_ID}/secrets/{args.sap_credentials or 'sap-credentials'}/versions/latest"
-    )
-    response = sm_client.access_secret_version(request={"name": secret_name})
-    sap_creds = json.loads(response.payload.data.decode("UTF-8"))
-    print(f"  Loaded credentials: {list(sap_creds.keys())}")
+    print("Loading credentials from Secret Manager...")
+    if args.credentials:
+        sm_client = secretmanager.SecretManagerServiceClient()
+        try:
+            secret_name = (
+                args.credentials
+                if args.credentials and args.credentials.startswith("projects/")
+                else f"projects/{PROJECT_ID}/secrets/{args.credentials}'/versions/latest"
+            )
+            response = sm_client.access_secret_version(request={"name": secret_name})
+            creds = json.loads(response.payload.data.decode("UTF-8"))
+            print(f"  Loaded credentials: {list(creds.keys())}")
+        except Exception as e:
+            print(f"""
+                Error loading credentials: {e}
+                Please check if the secret exists and you have the necessary permissions.
+                If secret is not found, check Readme.md to create the first version of the secret.
+                Once created, you can access the secret with:                
+                You can check the secret name and your permissions with:
+                    gcloud secrets describe {args.credentials} --project {PROJECT_ID}
+            """)
+            sys.exit(1)
+    else:
+        creds = {}
 
     # oauth_redirect_uri is excluded because the agent ID (part of the
     # redirect URI) is only assigned AFTER deployment; the agent reads
     # it from Secret Manager at runtime instead.
-    RUNTIME_ONLY_KEYS = {"oauth_redirect_uri"}
 
     env_vars = dict(settings["env_vars"])
-    for key, value in sap_creds.items():
+    for key, value in creds.items():
         if key in RUNTIME_ONLY_KEYS:
             print(f"  Skipping {key} (read from Secret Manager at runtime)")
             continue
-        env_vars[f"SAP_{key.upper()}"] = str(value)
+        env_vars[f"{key.upper()}"] = str(value)
 
-    if "auth_server_url" in sap_creds:
-        env_vars["AUTH_SERVER_URL"] = sap_creds["auth_server_url"]
+    # if "auth_server_url" in creds:
+    #     env_vars["AUTH_SERVER_URL"] = creds["auth_server_url"]
 
-    print(f"  Auth type: {env_vars.get('SAP_AUTH_TYPE', 'basic')}")
-    print(f"  Env vars:  {list(env_vars.keys())}")
+    # print(f"  Auth type: {env_vars.get('SAP_AUTH_TYPE', 'basic')}")
+    # print(f"  Env vars:  {list(env_vars.keys())}")
 
     # ---------------------------------------------------------------
     # Deploy / Update
     # ---------------------------------------------------------------
+    deploy_kwargs: Dict[str, Any] = {
+        "requirements": settings["requirements"],
+        "extra_packages": settings["extra_packages"],
+        "display_name": settings["display_name"],
+        "env_vars": env_vars,
+        "resource_limits": settings["resource_limits"],
+        "service_account": SERVICE_ACCOUNT,
+        "psc_interface_config": {
+            "network_attachment": NETWORK_ATTACHMENT,
+        },
+    }
+    if MIN_INSTANCES is not None:
+        deploy_kwargs["min_instances"] = MIN_INSTANCES
+    if MAX_INSTANCES is not None:
+        deploy_kwargs["max_instances"] = MAX_INSTANCES
+
     try:
         if args.update:
             print(f"\nUpdating existing Agent Engine: {args.update}")
             remote_app = agent_engines.update(
                 resource_name=args.update,
                 agent_engine=app,
-                requirements=settings["requirements"],
-                extra_packages=settings["extra_packages"],
-                display_name=settings["display_name"],
-                env_vars=env_vars,
-                resource_limits=settings["resource_limits"],
-                psc_interface_config={
-                    "network_attachment": NETWORK_ATTACHMENT,
-                },
+                **deploy_kwargs,
             )
             print("Update finished!")
         else:
             print("\nCreating new Agent Engine...")
             remote_app = agent_engines.create(
                 agent_engine=app,
-                requirements=settings["requirements"],
-                extra_packages=settings["extra_packages"],
-                display_name=settings["display_name"],
-                service_account=SERVICE_ACCOUNT,
-                env_vars=env_vars,
-                resource_limits=settings["resource_limits"],
-                psc_interface_config={
-                    "network_attachment": NETWORK_ATTACHMENT,
-                },
+                **deploy_kwargs,
             )
             print("Deployment finished!")
 

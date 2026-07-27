@@ -14,8 +14,10 @@
 
 
 from dotenv import load_dotenv
+import logging
 import os
 import base64
+import time
 from typing import Optional, Dict, Any
 from urllib.parse import urlparse
 import requests
@@ -30,6 +32,16 @@ import json
 
 # Load environment variables from the .env file
 load_dotenv()
+
+logger = logging.getLogger("sap_abap_agent.adt")
+if not logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [sap_adt] %(message)s",
+    )
+
+_connection_check_done = False
+
 
 class SapConfig:
     """SAP configuration container."""
@@ -62,9 +74,130 @@ def get_config() -> SapConfig:
             "- SAP_PASSWORD\n"
             "- SAP_CLIENT"
         )
-    
-    print(url, username, password, client)
+
+    logger.info(
+        "SAP config loaded: url=%s user=%s client=%s",
+        _safe_url_for_log(url),
+        username,
+        client,
+    )
     return SapConfig(url, username, password, client)
+
+
+def _safe_url_for_log(url: str) -> str:
+    """Return host/path summary without credentials."""
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or url
+        port = f":{parsed.port}" if parsed.port else ""
+        path = parsed.path or ""
+        return f"{parsed.scheme}://{host}{port}{path}"
+    except Exception:
+        return "<invalid-url>"
+
+
+def _adt_discovery_url() -> str:
+    return f"{get_base_url()}/sap/bc/adt/discovery"
+
+
+def _verbose_sap(msg: str, *, verbose: bool) -> None:
+    if verbose:
+        print(f"[SAP verify] {msg}", flush=True)
+
+
+def verify_sap_connection(force: bool = False, verbose: bool = False) -> str:
+    """
+    Probe SAP ADT discovery endpoint and log result.
+    Runs once per process unless force=True.
+
+    When verbose=True, prints step-by-step progress to stdout (for local smoke tests).
+    """
+    global _connection_check_done
+    if _connection_check_done and not force:
+        cached = "SAP connection already verified in this session."
+        _verbose_sap(cached, verbose=verbose)
+        return cached
+    if force:
+        _connection_check_done = False
+
+    _verbose_sap("Starting SAP ADT connectivity probe...", verbose=verbose)
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        _verbose_sap(f"FAILED — missing configuration: {exc}", verbose=verbose)
+        raise
+
+    discovery_url = _adt_discovery_url()
+    _verbose_sap(
+        f"Target: {_safe_url_for_log(cfg.url)} | user={cfg.username} | "
+        f"client={cfg.client}",
+        verbose=verbose,
+    )
+    _verbose_sap(f"GET {discovery_url} (timeout=30s)", verbose=verbose)
+    logger.info(
+        "SAP connection check: GET %s (user=%s, client=%s)",
+        discovery_url,
+        cfg.username,
+        cfg.client,
+    )
+    session = create_session()
+    started = time.monotonic()
+    try:
+        response = session.get(
+            discovery_url,
+            headers=get_auth_headers(),
+            timeout=30,
+        )
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        _verbose_sap(
+            f"Response: HTTP {response.status_code} in {elapsed_ms} ms",
+            verbose=verbose,
+        )
+        logger.info(
+            "SAP connection check response: status=%s elapsed_ms=%s",
+            response.status_code,
+            elapsed_ms,
+        )
+        if response.status_code >= 400:
+            snippet = (response.text or "")[:300]
+            _verbose_sap(
+                f"FAILED — HTTP {response.status_code}. Body preview: {snippet!r}",
+                verbose=verbose,
+            )
+            logger.error(
+                "SAP connection check failed: status=%s body_preview=%s",
+                response.status_code,
+                snippet,
+            )
+            raise Exception(
+                f"SAP ADT discovery returned HTTP {response.status_code}. "
+                f"Check SAP_URL, credentials, and client {cfg.client}."
+            )
+        _connection_check_done = True
+        msg = (
+            f"SAP ADT connection OK — {discovery_url} "
+            f"(HTTP {response.status_code}, {elapsed_ms} ms, client {cfg.client})"
+        )
+        _verbose_sap(f"CONNECTED — {msg}", verbose=verbose)
+        logger.info("SAP connection check succeeded: %s", msg)
+        return msg
+    except requests.exceptions.RequestException as exc:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        _verbose_sap(
+            f"FAILED — network error after {elapsed_ms} ms: {exc}",
+            verbose=verbose,
+        )
+        logger.exception(
+            "SAP connection check network error after %s ms: %s",
+            elapsed_ms,
+            exc,
+        )
+        raise Exception(f"SAP ADT connection failed: {exc}") from exc
+
+
+def ensure_sap_connection_logged() -> None:
+    """Log a one-time connectivity probe before the first ADT API call."""
+    verify_sap_connection(force=False)
 
 
 # Global state for configuration and session
@@ -217,8 +350,11 @@ def make_adt_request(
         Exception: If request fails.
     """
     global _csrf_token, _cookies
+    ensure_sap_connection_logged()
     session = create_session()
-    
+
+    logger.info("ADT request: %s %s", method.upper(), _safe_url_for_log(url))
+
     # For POST/PUT requests, ensure we have a CSRF token
     if method.upper() in ['POST', 'PUT'] and not _csrf_token:
         _csrf_token = fetch_csrf_token(url)
@@ -236,6 +372,7 @@ def make_adt_request(
     # Convert timeout from milliseconds to seconds
     timeout_seconds = timeout / 1000.0 if timeout > 1000 else timeout
     
+    started = time.monotonic()
     try:
         response = session.request(
             method=method.upper(),
@@ -245,7 +382,15 @@ def make_adt_request(
             params=params,
             timeout=timeout_seconds
         )
-        
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        logger.info(
+            "ADT response: %s %s -> HTTP %s (%s ms)",
+            method.upper(),
+            _safe_url_for_log(url),
+            response.status_code,
+            elapsed_ms,
+        )
+
         # If we get a 403 with CSRF error, try to fetch a new token and retry
         if (response.status_code == 403 and 
             'CSRF' in str(response.text)):
@@ -263,6 +408,14 @@ def make_adt_request(
         response.raise_for_status()
         return response
     except requests.exceptions.RequestException as e:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        logger.error(
+            "ADT request failed after %s ms: %s %s — %s",
+            elapsed_ms,
+            method.upper(),
+            _safe_url_for_log(url),
+            e,
+        )
         raise Exception(f"ADT request failed: {e}")
 
 
@@ -309,6 +462,26 @@ def return_error(error: Exception) -> Dict[str, Any]:
     }
 
 #######SAP API Calls###########
+
+
+def check_sap_connection(args: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Validate connectivity to the SAP system via the ADT discovery endpoint.
+    Use this before other tools to confirm SAP_URL, credentials, and client.
+
+    Args:
+        args (Dict[str, Any]): Optional ``force`` (bool) to re-run the probe.
+    """
+    try:
+        force = bool(args.get("force", False))
+        message = verify_sap_connection(force=force)
+        return {
+            "isError": False,
+            "content": [{"type": "text", "text": message}],
+        }
+    except Exception as error:
+        return return_error(error)
+
 
 def get_program(args: Dict[str, Any]) -> Dict[str, Any]:
     """

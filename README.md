@@ -540,3 +540,19 @@ The identity running `terraform apply` needs at least:
 | `scripts/setup_gcp_prerequisites.sh`        | `modules/apis`, `modules/service_account`, `modules/ai_platform_agents`, `modules/staging_bucket`, `modules/sap_secret` |
 | `scripts/setup_psc_infrastructure.sh`       | `modules/psc`                                                                                         |
 | `scripts/deploy_agent_engine.py`            | `modules/agent_engine_deploy` (when `deploy_agent_engine = true`)                                     |
+
+
+
+
+
+uv run python scripts/deploy_agent_engine.py \
+  --project eleven-analytics-agents \
+  --region us-central1
+
+
+uv run python scripts/deploy_agent_engine.py \
+  --project eleven-analytics-agents \
+  --region us-central1 \
+  --staging-bucket gs://ce-sap-latam-genai-demo-agent-engine-deploy \
+  --secrets-source config \
+  --update "projects/NUMERO/locations/us-central1/reasoningEngines/ID"

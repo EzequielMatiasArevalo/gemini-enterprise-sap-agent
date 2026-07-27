@@ -14,9 +14,10 @@ Resolution order for every deploy setting:
     2. ``deploy.<setting>`` in ``<agent_module>/config.yaml``
     3. Built-in fallback
 
-Infrastructure values (project, region, network attachment, secret name)
-still come from CLI args / env vars. ``service_account``, ``min_instances``,
-and ``max_instances`` can be set in ``deploy:`` in config.yaml or via CLI.
+Infrastructure toggles (PSC network attachment, runtime service account,
+Secret Manager vs ``deploy.env_vars``) are set in ``deploy:`` in
+``config.yaml`` and can be overridden via CLI. Project and region still
+come from CLI args / env vars.
 
 Usage:
     # Create new Agent Engine (default agent: sap_abap_agent_v2)
@@ -43,9 +44,6 @@ import vertexai
 import yaml
 from vertexai import agent_engines
 from google.cloud import secretmanager
-from dotenv import load_dotenv
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Deploy an ADK agent to Vertex AI Agent Engine",
@@ -65,7 +63,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--staging-bucket",
         default=None,
-        help="GCS staging bucket (default: gs://<PROJECT_ID>_cloudbuild)",
+        help=(
+            "Override deploy.staging_bucket / deploy.env_vars.GOOGLE_CLOUD_BUCKET "
+            "from config.yaml (default fallback: gs://<PROJECT_ID>_cloudbuild)"
+        ),
     )
     parser.add_argument(
         "--service-account",
@@ -89,17 +90,47 @@ def parse_args() -> argparse.Namespace:
         help="Override deploy.max_instances from config.yaml.",
     )
     parser.add_argument(
+        "--use-network-attachment",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Override deploy.use_network_attachment from config.yaml. "
+            "When enabled, attaches PSC (see deploy.network_attachment)."
+        ),
+    )
+    parser.add_argument(
         "--network-attachment",
         default=None,
         help=(
-            "PSC network attachment for the Agent Engine "
-            "(default: projects/<PROJECT_ID>/regions/<REGION>/networkAttachments/agent-engine-attachment)"
+            "Override deploy.network_attachment (full resource path or attachment name). "
+            "Implies PSC is enabled unless --no-use-network-attachment is set."
+        ),
+    )
+    parser.add_argument(
+        "--use-service-account",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Override deploy.use_service_account. When disabled, the Agent Engine "
+            "runtime uses the project default identity (no custom SA in the API)."
+        ),
+    )
+    parser.add_argument(
+        "--secrets-source",
+        choices=("config", "secret_manager"),
+        default=None,
+        help=(
+            "Override deploy.secrets_source: 'config' uses deploy.env_vars only; "
+            "'secret_manager' loads JSON from Secret Manager."
         ),
     )
     parser.add_argument(
         "--credentials",
         default=None,
-        help="Secret Manager name or full version path (default: credentials)",
+        help=(
+            "Override deploy.credentials_secret: Secret Manager secret ID or "
+            "full version path (only when secrets_source is secret_manager)."
+        ),
     )
     parser.add_argument(
         "--update",
@@ -241,6 +272,158 @@ def _parse_env_vars(raw: str) -> Dict[str, str]:
     return out
 
 
+def _resolve_bool(
+    cli_value: Optional[bool], cfg_value: Any, default: bool
+) -> bool:
+    if cli_value is not None:
+        return cli_value
+    if cfg_value is not None:
+        return bool(cfg_value)
+    return default
+
+
+def _normalize_gcs_uri(raw: str) -> str:
+    """Ensure bucket value is a ``gs://`` URI."""
+    value = str(raw).strip()
+    if not value:
+        raise SystemExit("staging_bucket must not be empty.")
+    if value.startswith("gs://"):
+        return value
+    return f"gs://{value}"
+
+
+def resolve_staging_bucket(
+    args: argparse.Namespace,
+    deploy_cfg: Dict[str, Any],
+    project_id: str,
+) -> str:
+    """
+    Resolve Vertex AI staging bucket for packaging the agent.
+
+    Priority:
+        1. ``STAGING_BUCKET`` env var
+        2. ``--staging-bucket`` CLI
+        3. ``deploy.staging_bucket`` in config.yaml
+        4. ``deploy.env_vars.GOOGLE_CLOUD_BUCKET`` in config.yaml
+        5. ``gs://<project_id>_cloudbuild``
+    """
+    if os.getenv("STAGING_BUCKET"):
+        return _normalize_gcs_uri(os.environ["STAGING_BUCKET"])
+    if args.staging_bucket:
+        return _normalize_gcs_uri(args.staging_bucket)
+
+    cfg_bucket = deploy_cfg.get("staging_bucket")
+    if cfg_bucket:
+        return _normalize_gcs_uri(str(cfg_bucket))
+
+    env_vars = deploy_cfg.get("env_vars") or {}
+    if isinstance(env_vars, dict):
+        cloud_bucket = env_vars.get("GOOGLE_CLOUD_BUCKET")
+        if cloud_bucket:
+            return _normalize_gcs_uri(str(cloud_bucket))
+
+    return f"gs://{project_id}_cloudbuild"
+
+
+def _normalize_network_attachment(
+    raw: str, project_id: str, region: str
+) -> str:
+    raw = raw.strip()
+    if raw.startswith("projects/"):
+        return raw
+    return (
+        f"projects/{project_id}/regions/{region}"
+        f"/networkAttachments/{raw}"
+    )
+
+
+def resolve_infrastructure_settings(
+    args: argparse.Namespace,
+    deploy_cfg: Dict[str, Any],
+    project_id: str,
+    region: str,
+) -> Dict[str, Any]:
+    """Resolve PSC, runtime SA, and credentials source from config + CLI."""
+    use_network_attachment = _resolve_bool(
+        args.use_network_attachment,
+        deploy_cfg.get("use_network_attachment"),
+        default=True,
+    )
+    if args.network_attachment is not None:
+        use_network_attachment = True
+
+    network_attachment_raw = (
+        args.network_attachment
+        or deploy_cfg.get("network_attachment")
+        or "agent-engine-attachment"
+    )
+    network_attachment = _normalize_network_attachment(
+        str(network_attachment_raw), project_id, region
+    )
+
+    use_service_account = _resolve_bool(
+        args.use_service_account,
+        deploy_cfg.get("use_service_account"),
+        default=True,
+    )
+    service_account = args.service_account or deploy_cfg.get("service_account")
+    if service_account is not None:
+        service_account = str(service_account).strip() or None
+        if service_account and not use_service_account:
+            use_service_account = True
+
+    credentials_secret = args.credentials or deploy_cfg.get("credentials_secret")
+    if credentials_secret is not None:
+        credentials_secret = str(credentials_secret).strip() or None
+
+    secrets_source = args.secrets_source or deploy_cfg.get("secrets_source")
+    if secrets_source is None:
+        secrets_source = (
+            "secret_manager"
+            if credentials_secret
+            else "config"
+        )
+    if secrets_source not in ("config", "secret_manager"):
+        raise SystemExit(
+            f"Invalid secrets_source '{secrets_source}'. "
+            "Use 'config' or 'secret_manager'."
+        )
+
+    if args.credentials and args.secrets_source is None:
+        secrets_source = "secret_manager"
+    if secrets_source == "secret_manager":
+        if not credentials_secret:
+            raise SystemExit(
+                "secrets_source is 'secret_manager' but no secret was provided. "
+                "Set deploy.credentials_secret in config.yaml or pass --credentials."
+            )
+    else:
+        credentials_secret = None
+
+    return {
+        "use_network_attachment": use_network_attachment,
+        "network_attachment": network_attachment,
+        "use_service_account": use_service_account,
+        "service_account": service_account,
+        "secrets_source": secrets_source,
+        "credentials_secret": credentials_secret,
+    }
+
+
+def load_credentials_from_secret_manager(
+    credentials_secret: str, project_id: str
+) -> Dict[str, Any]:
+    sm_client = secretmanager.SecretManagerServiceClient()
+    if credentials_secret.startswith("projects/"):
+        secret_name = credentials_secret
+    else:
+        secret_name = (
+            f"projects/{project_id}/secrets/{credentials_secret}/versions/latest"
+        )
+    response = sm_client.access_secret_version(request={"name": secret_name})
+    return json.loads(response.payload.data.decode("UTF-8"))
+
+
 def resolve_deploy_settings(
     args: argparse.Namespace, cfg: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -295,11 +478,6 @@ def resolve_deploy_settings(
     if args.env_vars:
         env_vars.update(_parse_env_vars(args.env_vars))
 
-    # Service account (None → default applied in main with PROJECT_ID)
-    service_account = args.service_account or deploy_cfg.get("service_account")
-    if service_account is not None:
-        service_account = str(service_account).strip() or None
-
     # Autoscaling bounds
     min_instances = (
         args.min_instances
@@ -334,7 +512,6 @@ def resolve_deploy_settings(
         "requirements": requirements,
         "extra_packages": extra_packages,
         "env_vars": env_vars,
-        "service_account": service_account,
         "min_instances": min_instances,
         "max_instances": max_instances,
     }
@@ -345,11 +522,6 @@ def main() -> None:
 
     PROJECT_ID = os.getenv("PROJECT_ID") or args.project
     LOCATION = os.getenv("REGION") or args.region
-    STAGING_BUCKET = (
-        os.getenv("STAGING_BUCKET")
-        or args.staging_bucket
-        or f"gs://{PROJECT_ID}_cloudbuild"
-    )
 
     RUNTIME_ONLY_KEYS = [
         "oauth_redirect_uri"
@@ -357,17 +529,22 @@ def main() -> None:
 
     os.environ["PROJECT_ID"] = PROJECT_ID
 
-    NETWORK_ATTACHMENT = args.network_attachment or (
-        f"projects/{PROJECT_ID}/regions/{LOCATION}"
-        f"/networkAttachments/agent-engine-attachment"
-    )
-
     cfg = load_config(args.agent_module, args.config)
+    deploy_cfg = cfg.get("deploy", {}) or {}
+    STAGING_BUCKET = resolve_staging_bucket(args, deploy_cfg, PROJECT_ID)
+    infra = resolve_infrastructure_settings(args, deploy_cfg, PROJECT_ID, LOCATION)
     settings = resolve_deploy_settings(args, cfg)
 
-    SERVICE_ACCOUNT = settings["service_account"] or (
-        f"agent-engine-sa@{PROJECT_ID}.iam.gserviceaccount.com"
-    )
+    SERVICE_ACCOUNT = None
+    if infra["use_service_account"]:
+        SERVICE_ACCOUNT = infra["service_account"] or (
+            f"agent-engine-sa@{PROJECT_ID}.iam.gserviceaccount.com"
+        )
+        if "@" not in SERVICE_ACCOUNT:
+            SERVICE_ACCOUNT = (
+                f"{SERVICE_ACCOUNT}@{PROJECT_ID}.iam.gserviceaccount.com"
+            )
+
     MIN_INSTANCES = settings["min_instances"]
     MAX_INSTANCES = settings["max_instances"]
 
@@ -376,9 +553,16 @@ def main() -> None:
     print("Initializing Vertex AI SDK...")
     print(f"  Project:            {PROJECT_ID}")
     print(f"  Location:           {LOCATION}")
-    print(f"  Staging Bucket:     {STAGING_BUCKET}")
-    print(f"  Network Attachment: {NETWORK_ATTACHMENT}")
-    print(f"  Service Account:    {SERVICE_ACCOUNT}")
+    print(f"  Staging Bucket:       {STAGING_BUCKET}")
+    print(f"  PSC / Attachment:     {infra['use_network_attachment']}")
+    if infra["use_network_attachment"]:
+        print(f"  Network Attachment:   {infra['network_attachment']}")
+    print(f"  Runtime SA (custom):  {infra['use_service_account']}")
+    if infra["use_service_account"]:
+        print(f"  Service Account:      {SERVICE_ACCOUNT}")
+    else:
+        print("  Service Account:      (project default — no custom SA in API)")
+    print(f"  Secrets source:       {infra['secrets_source']}")
     print(f"  Min Instances:      {MIN_INSTANCES}")
     print(f"  Max Instances:      {MAX_INSTANCES}")
     print(f"  Agent Module:       {args.agent_module}.{settings['agent_attr']}")
@@ -407,43 +591,35 @@ def main() -> None:
     )
 
     # ---------------------------------------------------------------
-    # Load secrets from Secret Manager and build env_vars.
+    # Build env_vars (config.yaml and/or Secret Manager).
     # ---------------------------------------------------------------
-    print("Loading credentials from Secret Manager...")
-    if args.credentials:
-        sm_client = secretmanager.SecretManagerServiceClient()
+    env_vars = dict(settings["env_vars"])
+
+    if infra["secrets_source"] == "secret_manager":
+        print("Loading credentials from Secret Manager...")
         try:
-            secret_name = (
-                args.credentials
-                if args.credentials and args.credentials.startswith("projects/")
-                else f"projects/{PROJECT_ID}/secrets/{args.credentials}'/versions/latest"
+            creds = load_credentials_from_secret_manager(
+                infra["credentials_secret"], PROJECT_ID
             )
-            response = sm_client.access_secret_version(request={"name": secret_name})
-            creds = json.loads(response.payload.data.decode("UTF-8"))
             print(f"  Loaded credentials: {list(creds.keys())}")
         except Exception as e:
+            secret_ref = infra["credentials_secret"]
             print(f"""
                 Error loading credentials: {e}
                 Please check if the secret exists and you have the necessary permissions.
                 If secret is not found, check Readme.md to create the first version of the secret.
-                Once created, you can access the secret with:                
                 You can check the secret name and your permissions with:
-                    gcloud secrets describe {args.credentials} --project {PROJECT_ID}
+                    gcloud secrets describe {secret_ref} --project {PROJECT_ID}
             """)
             sys.exit(1)
+        for key, value in creds.items():
+            if key in RUNTIME_ONLY_KEYS:
+                print(f"  Skipping {key} (read from Secret Manager at runtime)")
+                continue
+            env_vars[key.upper()] = str(value)
     else:
-        creds = {}
-
-    # oauth_redirect_uri is excluded because the agent ID (part of the
-    # redirect URI) is only assigned AFTER deployment; the agent reads
-    # it from Secret Manager at runtime instead.
-
-    env_vars = dict(settings["env_vars"])
-    for key, value in creds.items():
-        if key in RUNTIME_ONLY_KEYS:
-            print(f"  Skipping {key} (read from Secret Manager at runtime)")
-            continue
-        env_vars[f"{key.upper()}"] = str(value)
+        print("Using credentials from deploy.env_vars in config.yaml (no Secret Manager).")
+        print(f"  Env var keys: {sorted(env_vars.keys())}")
 
     # if "auth_server_url" in creds:
     #     env_vars["AUTH_SERVER_URL"] = creds["auth_server_url"]
@@ -460,11 +636,13 @@ def main() -> None:
         "display_name": settings["display_name"],
         "env_vars": env_vars,
         "resource_limits": settings["resource_limits"],
-        "service_account": SERVICE_ACCOUNT,
-        "psc_interface_config": {
-            "network_attachment": NETWORK_ATTACHMENT,
-        },
     }
+    if infra["use_service_account"]:
+        deploy_kwargs["service_account"] = SERVICE_ACCOUNT
+    if infra["use_network_attachment"]:
+        deploy_kwargs["psc_interface_config"] = {
+            "network_attachment": infra["network_attachment"],
+        }
     if MIN_INSTANCES is not None:
         deploy_kwargs["min_instances"] = MIN_INSTANCES
     if MAX_INSTANCES is not None:

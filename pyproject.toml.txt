@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "SAP Gateway integration agent using Google ADK"
 license = {text = "Apache-2.0"}
 authors = [
-    {name = "Martin Ballester", email = "mballester@11solutions.cl"},
+    {name = "Ezequiel Arevalo", email = "earevalo@dataguara.com"},
 ]
 dependencies = [
     "google-adk>=1.27.0,<2.0.0",

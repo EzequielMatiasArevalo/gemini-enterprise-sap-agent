@@ -14,63 +14,75 @@
 
 # Agent metadata
 agent_name: 'sap_abap_agent_v2'
-agent_display_name: 'SAP ABAP ADK Agent V2'
+agent_display_name: 'SAP ABAP ADK Agent V3'
 agent_description: 'SAP ABAP Code Agent in Google Cloud'
 
 # ---------------------------------------------------------------------------
 # Deployment settings consumed by scripts/deploy_agent_engine.py.
-# CLI arguments to that script override anything defined here.
-# Infrastructure-specific values (project, region, network attachment,
-# secret name, etc.) still come from Terraform / CLI.
+# CLI arguments override anything defined here.
 # ---------------------------------------------------------------------------
 deploy:
-  # Display name shown in the Vertex AI Agent Engine console.
-  display_name: 'SAP Agent'
+  display_name: 'SAP ABAP Agent V2'
 
-  # Runtime service account (email or short ID). When omitted, the deploy
-  # script uses agent-engine-sa@<project>.iam.gserviceaccount.com.
-  # service_account: 'agent-engine-sa'
+  # GCS bucket for Vertex AI Agent Engine packaging (vertexai.init staging_bucket).
+  # If omitted, uses deploy.env_vars.GOOGLE_CLOUD_BUCKET, then gs://<project>_cloudbuild.
+  staging_bucket: gs://adt-sap-agent-engine-bucket
 
-  # Autoscaling bounds (optional; Agent Engine defaults apply when omitted).
+  # --- Connectivity (PSC) ---
+  # false: public/default Agent Engine networking (no psc_interface_config).
+  # true:  attach to the PSC network attachment below.
+  use_network_attachment: false
+  # Full resource path or short attachment name (default: agent-engine-attachment).
+  # network_attachment: agent-engine-attachment
+
+  # --- Runtime identity ---
+  # false: omit service_account from the API (project default runtime identity).
+  # true:  use deploy.service_account or agent-engine-sa@<project>.iam.gserviceaccount.com.
+  use_service_account: false
+  # service_account: sap-agent-abap
+
+  # --- Credentials ---
+  # config:          SAP_* and related vars come only from deploy.env_vars below.
+  # secret_manager:  load JSON from Secret Manager (deploy.credentials_secret).
+  secrets_source: config
+  # credentials_secret: sap-agent-abap
+
   min_instances: 1
   max_instances: 10
 
-  # Attribute name of the root agent inside <agent_name>/agent.py.
   agent_attr: 'root_agent'
 
-  # Container resource limits.
-  # Supported: cpu in {"1","2","4","6","8"}, memory in "1Gi" .. "32Gi".
   resource_limits:
     cpu: '4'
     memory: '8Gi'
 
-  # Local packages to bundle into the Agent Engine container.
-  # Defaults to ["./<agent_name>"] when omitted.
   extra_packages:
     - './sap_abap_agent_v2'
 
-  # Non-secret environment variables merged into the deployment.
-  # Secret-derived env vars (SAP_*, AUTH_SERVER_URL) are added by the
-  # deploy script from Secret Manager and do NOT belong here.
-  env_vars: 
+  env_vars:
     SAP_LANGUAGE: 'EN'
     GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY: 'true'
     OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: 'true'
-    # GOOGLE_GENAI_USE_VERTEXAI: 'TRUE'
-  # Python requirements installed inside the Agent Engine container.
+    SAP_URL: 'http://ecc-xe1.camanchaca.cl/sap/bc/adt?saml2=disabled'
+    SAP_USERNAME: 'S-PICPI'
+    SAP_PASSWORD: 'Bt1419042.2026'
+    SAP_CLIENT: '300'
+    GOOGLE_CLOUD_LOCATION: 'global'
+    GOOGLE_CLOUD_BUCKET: 'gs://adt-sap-agent-engine-bucket'
+    GOOGLE_GENAI_USE_VERTEXAI: 'TRUE'
+
+  # Pinned to match uv.lock (Python 3.11 runtime on Agent Engine).
   requirements:
-    - 'google-cloud-aiplatform[adk,agent_engines]>=1.128.0'
-    - 'google-adk>=1.27.0'
-    - 'google-cloud-secret-manager>=2.16.0'
-    - 'pydantic>=2.5.0'
-    - 'pydantic-settings>=2.1.0'
-    - 'aiohttp>=3.9.0'
-    - 'asyncio-throttle>=1.0.2'
-    - 'structlog>=23.2.0'
-    - 'tenacity>=8.2.3'
-    - 'authlib>=1.3.0'
-    - 'cryptography>=41.0.7'
-    - 'xmltodict>=0.13.0'
-    - 'pyyaml>=6.0.1'
-    - 'python-dotenv>=1.0.0'
-    - 'nest-asyncio>=1.5.0'
+    - 'google-cloud-aiplatform[adk,agent_engines]==1.153.1'
+    - 'google-adk==1.34.1'
+    - 'google-cloud-secret-manager==2.28.0'
+    - 'pydantic==2.12.5'
+    - 'pydantic-settings==2.14.1'
+    - 'aiohttp==3.13.4'
+    - 'tenacity==9.1.4'
+    - 'authlib==1.7.2'
+    - 'cryptography==48.0.0'
+    - 'xmltodict==0.15.1'
+    - 'pyyaml==6.0.3'
+    - 'python-dotenv==1.2.2'
+    - 'nest-asyncio==1.6.0'
